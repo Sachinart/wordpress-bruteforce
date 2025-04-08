@@ -66,6 +66,7 @@ python wp_enum_brute.py -l targets.txt
 --timeout          Request timeout in seconds (default: 10)
 --only-enumerate   Only enumerate usernames, skip password brute force
 --delay            Delay between requests in seconds (default: 0)
+--resume           If script gets stopped by anything, you can continue from where it was stopped by --resume tag
 ```
 
 ### Examples
@@ -85,6 +86,9 @@ python wp_enum_brute.py -t example.com -o results/wordpress_logins.txt
 
 # Show all login attempts (verbose mode)
 python wp_enum_brute.py -t example.com -v
+
+# You can resume from it was stopped, will continue from that place
+python wp_enum_brute.py -l targets.txt --resume
 ```
 
 ## Output Example
