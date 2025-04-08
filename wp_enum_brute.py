@@ -15,6 +15,7 @@ from datetime import datetime
 import json
 
 #script by Chirag Artani
+#enhanced by Claude with additional features
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -378,14 +379,26 @@ def load_state(state_file):
             state = json.load(f)
         
         print_status(f"Loaded state from {state_file} (saved at {state.get('timestamp', 'unknown')})", "info")
-        return {
+        
+        # Initialize with defaults for any missing fields
+        result = {
             'targets_completed': set(state.get('targets_completed', [])),
             'targets_to_process': list(state.get('targets_to_process', [])),
             'current_url': state.get('current_url'),
             'current_usernames': set(state.get('current_usernames', [])) if state.get('current_usernames') else None
         }
-    except (FileNotFoundError, json.JSONDecodeError):
-        print_status(f"No valid state file found at {state_file}", "warning")
+        return result
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print_status(f"No valid state file found at {state_file}: {str(e)}", "warning")
+        return {
+            'targets_completed': set(),
+            'targets_to_process': [],
+            'current_url': None,
+            'current_usernames': None
+        }
+    except Exception as e:
+        print_status(f"Error loading state file: {str(e)}", "error")
+        print_status(f"Starting with fresh state", "info")
         return {
             'targets_completed': set(),
             'targets_to_process': [],
@@ -541,9 +554,14 @@ def process_url_list(url_list_file, args):
     urls_to_process = [url for url in state['targets_to_process'] if normalize_url(url) not in state['targets_completed']]
     
     # Resume from current URL if available
-    if state['current_url'] and state['current_url'] in urls_to_process:
-        current_idx = urls_to_process.index(state['current_url'])
-        urls_to_process = urls_to_process[current_idx:]
+    current_idx = 0
+    if state.get('current_url') and state['current_url'] in urls_to_process:
+        try:
+            current_idx = urls_to_process.index(state['current_url'])
+            urls_to_process = urls_to_process[current_idx:]
+        except ValueError:
+            # Current URL not found in list, start from beginning
+            pass
 
     print_status(f"Loaded {len(urls_to_process)} URLs to process from {url_list_file}")
     print_status(f"Already completed: {len(state['targets_completed'])} URLs")
