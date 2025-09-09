@@ -98,6 +98,73 @@ def normalize_url(url):
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
+async def verify_admin_access(session, url, timeout):
+    """Verify if the logged-in user has admin access by checking wp-admin dashboard"""
+    try:
+        admin_urls = [
+            f"{url}/wp-admin/",
+            f"{url}/wp-admin/index.php",
+            f"{url}/wp-admin/users.php"
+        ]
+        
+        for admin_url in admin_urls:
+            try:
+                headers = {'User-Agent': get_random_user_agent()}
+                async with session.get(admin_url, timeout=timeout, ssl=False, headers=headers, allow_redirects=False) as response:
+                    # If we get 200 and not redirected to login, we have admin access
+                    if response.status == 200:
+                        content = await response.text()
+                        # Check for admin dashboard indicators
+                        if any(indicator in content.lower() for indicator in [
+                            'dashboard', 'wp-admin-bar', 'adminmenu', 'manage_options',
+                            'users.php', 'plugins.php', 'themes.php', 'wp-admin/index.php'
+                        ]):
+                            return True
+                    # If redirected to login, not admin
+                    elif response.status in [301, 302]:
+                        location = response.headers.get('Location', '')
+                        if 'wp-login.php' in location:
+                            return False
+            except:
+                continue
+        return False
+    except:
+        return False
+
+def verify_admin_access_sync(session, url, timeout):
+    """Synchronous version of admin access verification"""
+    try:
+        admin_urls = [
+            f"{url}/wp-admin/",
+            f"{url}/wp-admin/index.php",
+            f"{url}/wp-admin/users.php"
+        ]
+        
+        for admin_url in admin_urls:
+            try:
+                headers = {'User-Agent': get_random_user_agent()}
+                response = session.get(admin_url, timeout=timeout, verify=False, headers=headers, allow_redirects=False)
+                
+                # If we get 200 and not redirected to login, we have admin access
+                if response.status_code == 200:
+                    content = response.text.lower()
+                    # Check for admin dashboard indicators
+                    if any(indicator in content for indicator in [
+                        'dashboard', 'wp-admin-bar', 'adminmenu', 'manage_options',
+                        'users.php', 'plugins.php', 'themes.php', 'wp-admin/index.php'
+                    ]):
+                        return True
+                # If redirected to login, not admin
+                elif response.status_code in [301, 302]:
+                    location = response.headers.get('Location', '')
+                    if 'wp-login.php' in location:
+                        return False
+            except:
+                continue
+        return False
+    except:
+        return False
+
 def get_random_user_agent():
     """Return a random user agent from the list"""
     return random.choice(USER_AGENTS)
@@ -623,7 +690,7 @@ async def async_test_plugin_upload(url, login_path, username, password, timeout,
         
         # Prepare login data
         login_data = {
-            'log': username,
+            'log': username.strip(),
             'pwd': password,
             'wp-submit': 'Log In',
             'testcookie': '1'
@@ -788,7 +855,7 @@ def test_plugin_upload(url, login_path, username, password, timeout, upload_outp
 
         # Prepare login data
         login_data = {
-            'log': username,
+            'log': username.strip(),
             'pwd': password,
             'wp-submit': 'Log In',
             'testcookie': '1'
@@ -1223,7 +1290,7 @@ async def async_try_login(url, login_path, username, password, timeout, session)
     
     # Prepare login data
     login_data = {
-        'log': username,
+        'log': username.strip(),
         'pwd': password,
         'wp-submit': 'Log In',
         'testcookie': '1'
@@ -1232,12 +1299,43 @@ async def async_try_login(url, login_path, username, password, timeout, session)
     try:
         # Try to log in
         async with session.post(login_url, data=login_data, headers=headers, cookies=cookies,
-                             allow_redirects=False, timeout=timeout, ssl=False) as response:
-            # Check for successful login (302 redirect with login cookies)
-            if response.status == 302:
-                cookie_header = response.headers.get('Set-Cookie', '')
-                if 'wordpress_logged_in' in cookie_header:
-                    return True
+                             allow_redirects=True, timeout=timeout, ssl=False) as response:
+            
+            # Check for failed login indicators
+            content = await response.text()
+            content_lower = content.lower()
+            
+            # Check for explicit login failure messages
+            failure_indicators = [
+                'incorrect username or password',
+                'invalid username', 
+                'invalid password',
+                'error: the username',
+                'is not registered',
+                'authentication failed',
+                'login failed',
+                'wp-login.php'
+            ]
+            
+            if any(indicator in content_lower for indicator in failure_indicators):
+                return False
+                
+            # Check for successful login indicators
+            success_indicators = [
+                'dashboard', 'wp-admin-bar', 'adminmenu', 
+                'wp-admin/index.php', 'wp-admin/profile.php'
+            ]
+            
+            if any(indicator in content_lower for indicator in success_indicators):
+                # Additional verification - check admin access
+                return await verify_admin_access(session, url, timeout)
+                
+            # Check cookies as fallback
+            cookie_header = response.headers.get('Set-Cookie', '')
+            if 'wordpress_logged_in' in cookie_header:
+                # Verify admin access even with cookies
+                return await verify_admin_access(session, url, timeout)
+                
     except Exception:
         pass
         
@@ -1258,7 +1356,7 @@ def try_login(url, login_path, username, password, timeout, delay=0):
 
         # Prepare login data
         login_data = {
-            'log': username,
+            'log': username.strip(),
             'pwd': password,
             'wp-submit': 'Log In',
             'testcookie': '1'
@@ -1273,13 +1371,41 @@ def try_login(url, login_path, username, password, timeout, delay=0):
         }
 
         response = session.post(login_url, data=login_data, headers=headers,
-                              allow_redirects=False, timeout=timeout, verify=False)
+                              allow_redirects=True, timeout=timeout, verify=False)
 
-        # Check for successful login (302 redirect with login cookies)
-        if response.status_code == 302:
-            cookie_header = response.headers.get('Set-Cookie', '')
-            if 'wordpress_logged_in' in cookie_header or any(cookie.name.startswith('wordpress_logged_in') for cookie in session.cookies):
-                return True
+        # Check for failed login indicators
+        content = response.text.lower()
+        
+        # Check for explicit login failure messages
+        failure_indicators = [
+            'incorrect username or password',
+            'invalid username', 
+            'invalid password',
+            'error: the username',
+            'is not registered',
+            'authentication failed',
+            'login failed',
+            'wp-login.php'
+        ]
+        
+        if any(indicator in content for indicator in failure_indicators):
+            return False
+            
+        # Check for successful login indicators
+        success_indicators = [
+            'dashboard', 'wp-admin-bar', 'adminmenu', 
+            'wp-admin/index.php', 'wp-admin/profile.php'
+        ]
+        
+        if any(indicator in content for indicator in success_indicators):
+            # Additional verification - check admin access
+            return verify_admin_access_sync(session, url, timeout)
+            
+        # Check cookies as fallback
+        cookie_header = response.headers.get('Set-Cookie', '')
+        if 'wordpress_logged_in' in cookie_header or any(cookie.name.startswith('wordpress_logged_in') for cookie in session.cookies):
+            # Verify admin access even with cookies
+            return verify_admin_access_sync(session, url, timeout)
 
         return False
 
@@ -1305,7 +1431,7 @@ async def async_check_plugin_access(url, login_path, username, password, timeout
     
     # Prepare login data
     login_data = {
-        'log': username,
+        'log': username.strip(),
         'pwd': password,
         'wp-submit': 'Log In',
         'testcookie': '1'
@@ -1377,7 +1503,7 @@ def check_plugin_access(url, login_path, username, password, timeout):
 
         # Prepare login data
         login_data = {
-            'log': username,
+            'log': username.strip(),
             'pwd': password,
             'wp-submit': 'Log In',
             'testcookie': '1'
