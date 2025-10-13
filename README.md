@@ -35,8 +35,8 @@ Created by Chirag Artani from [3rag.com](https://3rag.com)
 
 ```bash
 # Clone the repository
-git clone https://github.com/chiragartani/wp-enum-brute.git
-cd wp-enum-brute
+git clone https://github.com/Sachinart/wordpress-bruteforce.git
+cd wordpress-bruteforce
 
 # Install required dependencies
 pip install requests colorama
