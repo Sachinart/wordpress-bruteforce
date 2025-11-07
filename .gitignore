@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Output files
+vuln-found.txt
+credentials-only.txt
+wp_successful_logins.txt
+wp_plugin_uploads.txt
+default-bruteforce-output.txt
+wp_scanner_state.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
